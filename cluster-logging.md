@@ -2,47 +2,44 @@
 
 This is the protocol and semantic conventions documentation for Red Hat OpenShift Logging's OTEL support starting with Logging v6.1 which is considered **Tech-Preview**. This document should be considered as a work in progress and is subject to change until OTEL support graduates to **General Acceptance**.
 
-## Forwarding and Ingestion Protocol
+| Specification                                                        | Version |
+|----------------------------------------------------------------------|---------|
+| [OpenTelemetry](https://opentelemetry.io/docs/specs/otel/)           | 1.48.0  |
+| [Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/) | 1.36.0  |
 
-Red Hat OpenShift Logging provides a log collection and forwarding solution that is capable of writing logs to OpenTelemetry endpoints using OTLP. [OTLP](https://opentelemetry.io/docs/specs/otlp/) is the *protocol* for encoding, transporting, and delivering telemetry data.  This product additionally is capable of providing a Loki storage deployment that provides an OTLP endpont to ingest log streams.  This document defines the semantic conventions associated with the logs collected from the various sources of an OpenShift cluster.
+## Forwarding Protocol
+
+Red Hat OpenShift Logging provides a log collection and forwarding solution that is capable of writing logs to OpenTelemetry endpoints using OTLP. [OTLP](https://opentelemetry.io/docs/specs/otlp/) is the *protocol* for encoding, transporting, and delivering telemetry data.  This document defines the semantic conventions associated with the logs collected from the various sources of an OpenShift cluster.
 
 **Note:** Logs are forwarded using OTLP/HTTP as defined by the OpenTelemetry Observability Framework.  It uses Protobuf payloads encoded in JSON format.
 
-## Semantic Conventions
+## LokiStack Storage
 
-The log collector provided by this solution collects the following log streams:
+The LokiStack store has an [OTLP endpoint](https://grafana.com/docs/loki/latest/send-data/otel/) to ingest OTLP log streams. OTEL logs are stored in Loki as follows:
 
-* Container logs
-* Cluster node journal logs
-* Cluster node auditd logs
-* Kubernetes and OpenShift API server logs
-* OpenShift Virtual Network (OVN) logs
+* OTEL attribute names are converted to Loki labels. Characters: (`.`,`/`,`-`) are replaced by underscore (`_`). For example, `k8s.namespace.name` becomes `k8s_namespace_name`.
+* Selected resource attributes become stream labels, other attributes become structured-metadata labels (details below.)
+* The `Body` field of the OTEL log record is stored as the Loki log record.
+* Other log record fields become structured-metadata labels (details below.)
 
-These streams are forwarded using the sementatic conventions defined by [OpenTelemetry semantic attributes](https://github.com/open-telemetry/semantic-conventions/tree/main/docs). The semantic conventions in OpenTelemetry define a *Resource* as an immutable representation of the entity producing telemetry as *Attributes*. For example, a process producing telemetry that is running in a container has a container_name, a cluster_id, a pod_name, a namespace, and possibly a deployment or app_name. All of these *Attributes* are included in the *Resource* object.  This grouping and reducing of common attributes is a powerful tool when sending logs as telemetry data.
+## Log Record Structure
 
-The following sections define the attributes that are generally forwarded.
+The [log data model](https://opentelemetry.io/docs/specs/otel/logs/data-model/#log-and-event-record-definition) defines fields in a log record.
 
-### Log Entry Structure
+| OTEL Field Name     | Loki Label             | Comment                                                                     |
+|:--------------------|:-----------------------|:----------------------------------------------------------------------------|
+| `Body`              |                        | Stored as the Loki log record.                                              |
+| `Timestamp`         | `timestamp`            | UnixNano format                                                             |
+| `ObservedTimestamp` | `observed_timestamp`   | UnixNano format                                                             |
+| `SeverityText`      | `severity_text`        | Only on container and journal logs                                          |
+| `Resource`          | see attributes section | Describe the _source_ of the logs, same values for all records in a stream. |
+| `Attributes`        | see attributes section | Describe individual logs, can have different values for each record.        |
 
-All log streams include the following [log data](https://opentelemetry.io/docs/specs/otel/logs/data-model/#log-and-event-record-definition) fields
+**Note:** Unlike _attribute_ names, field names are not mandated by the spec, they are intended to map to "native" names in preexisting formats, protocols or storage.
+For example, the OTLP _protocol_ represents `Timestamp` as `timeUnixNano` to fit JSON-RPC naming conventions.
+The Loki label names above are defined by the [Loki OTEL mapping](https://grafana.com/docs/loki/latest/send-data/otel/)
 
-The "Applicable Sources" column shows which log sources this field applies to:
-
-* `all` is a field that is present on all logs
-* `container` is a field that is present on Kubernetes Container logs (both application and infrastructure)
-* `audit` is a field that is present on Kubernetes and OpenShift API and OVN Logs
-* `auditd` is a field that is present on Node auditd logs
-* `journal` is a field that is present on Node journal logs
-
-| Name |  Applicable Sources | Comment |
-| :--- | :------------------ | :------ |
-| `body` | all | |
-| `observedTimeUnixNano` | all | |
-| `timeUnixNano` | all | |
-| `severityText` | container, journal | |
-| `attributes` | all | Optional.  Present when forwarding stream specific attributes|
-
-### Attributes
+## Attributes
 
 Log entries will have a set of resource, scope and log attributes depending on their source described by the following table.
 
@@ -70,11 +67,11 @@ The "Storage" column shows whether the attribute is stored into a LokiStack usin
 | `openshift.cluster.uid` | resource | all | required stream label | |
 | `openshift.log.source` | resource | all | required stream label | |
 | `openshift.log.type` | resource | all | required stream label | |
-| `openshift.labels.*` | resource | all | structured metadata | |
+| `openshift.label.*` | resource | all | structured metadata | |
 | `k8s.node.name` | resource | all | stream label | |
 | `k8s.namespace.name` | resource | container | required stream label | |
 | `k8s.container.name` | resource | container | stream label | |
-| `k8s.pod.labels.*` | resource | container | structured metadata | |
+| `k8s.pod.label.*` | resource | container | structured metadata | |
 | `k8s.pod.name` | resource | container | stream label | |
 | `k8s.pod.uid` | resource | container | structured metadata | |
 | `k8s.cronjob.name` | resource | container | stream label | Conditionally forwarded based on creator of Pod |
@@ -84,19 +81,6 @@ The "Storage" column shows whether the attribute is stored into a LokiStack usin
 | `k8s.replicaset.name` | resource | container | structured metadata | Conditionally forwarded based on creator of Pod |
 | `k8s.statefulset.name` | resource | container | stream label | Conditionally forwarded based on creator of Pod |
 | `log.iostream` | log | container | structured metadata | |
-| `k8s.audit.event.level` | log | audit | structured metadata | |
-| `k8s.audit.event.stage` | log | audit | structured metadata | |
-| `k8s.audit.event.user_agent` | log | audit | structured metadata | |
-| `k8s.audit.event.request.uri` | log | audit | structured metadata | |
-| `k8s.audit.event.response.code` | log | audit | structured metadata | |
-| `k8s.audit.event.annotation.*` | log | audit | structured metadata | |
-| `k8s.audit.event.object_ref.resource` | log | audit | structured metadata | |
-| `k8s.audit.event.object_ref.name` | log | audit | structured metadata | |
-| `k8s.audit.event.object_ref.namespace` | log | audit | structured metadata | |
-| `k8s.audit.event.object_ref.api_group` | log | audit | structured metadata | |
-| `k8s.audit.event.object_ref.api_version` | log | audit | structured metadata | |
-| `k8s.user.username` | log | audit | structured metadata | |
-| `k8s.user.groups` | log | audit | structured metadata | |
 | `process.executable.name` | resource | journal | structured metadata | |
 | `process.executable.path` | resource | journal | structured metadata | |
 | `process.command_line` | resource | journal | structured metadata | |
@@ -107,7 +91,24 @@ The "Storage" column shows whether the attribute is stored into a LokiStack usin
 
 **Note:** Attributes marked as "Compatibility attribute" are added to support minimal backwards compatibility with the [ViaQ](https://github.com/openshift/cluster-logging-operator/blob/release-6.0/docs/reference/datamodels/viaq/v1.adoc) data model. These attributes should be considered deprecated and will be removed one release after **General Acceptance** of Red Hat OpenShift Logging.
 
-**Note:** Loki changes the attribute names when persisting them to storage. They will be lower-cased and all characters in the set: (`.`,`/`,`-`) will be replaced by underscores (`_`). For example, `k8s.namespace.name` will become `k8s_namespace_name`.
+**Note:** Attributes starting with `openshift.` are openshift logging extensions, not (yet) part of the OTEL spec.
+
+### Attributes vs. Structured Logs
+
+Information in the log body is normally _not_ duplicated as attributes.
+This is different from the ViaQ model, where structured logs (especially audit logs) were parsed and presented as fields in the ViaQ envelope.
+
+Loki allows you to parse and query structured logs on their fields, so there is no need to extract these fields in the collector.
+
+Examples:
+
+Query for API audit events (JSON body) with a particular event level and user name.
+
+    {openshift_log_type="audit"}|json|k8s_audit_event_level=="MetaData"|k8s_user_name=="Fred"
+
+Query for Linux audit events (logfmt body) for services that were started by the root user.
+
+    {openshift_log_type="audit"}|logfmt|uid=0|~"^SERVICE_START"
 
 ## References
 
@@ -115,3 +116,5 @@ The "Storage" column shows whether the attribute is stored into a LokiStack usin
 * [Logs Data Model](https://opentelemetry.io/docs/specs/otel/logs/data-model/)
 * [General Logs Attributes](https://opentelemetry.io/docs/specs/semconv/general/logs/)
 * [Cluster Logging OTEL Support](https://github.com/openshift/enhancements/pull/1684)
+* [Ingesting logs to Loki using OpenTelemetry Collector](https://grafana.com/docs/loki/latest/send-data/otel/)
+* [Kubernetes Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/resource/k8s/)
